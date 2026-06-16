@@ -1,0 +1,112 @@
+-- =============================================
+-- AgriGuard Supabase Schema
+-- =============================================
+
+-- 1. 主申報資料表
+CREATE TABLE IF NOT EXISTS disaster_reports (
+  id                    BIGSERIAL PRIMARY KEY,
+  created_at            TIMESTAMPTZ DEFAULT NOW(),
+  received_at           TIMESTAMPTZ,
+  analyzed_at           TIMESTAMPTZ,
+  completed_at          TIMESTAMPTZ,
+  failed_at             TIMESTAMPTZ,
+
+  -- 來源資訊
+  source_platform       TEXT DEFAULT 'line',       -- 'line' | 'api'
+  line_user_id          TEXT,
+  line_reply_token      TEXT,
+  farmer_id             TEXT,
+  farmer_phone          TEXT,
+
+  -- 原始輸入
+  raw_content           TEXT,
+  photo_url             TEXT,
+  stt_transcript        TEXT,
+  stt_confidence        FLOAT,
+
+  -- AI 萃取欄位
+  crop_type             TEXT,
+  disaster_type         TEXT,                      -- typhoon|flood|drought|cold_injury|pest|hail
+  damage_area_ha        FLOAT DEFAULT 0,
+  damage_level          INT DEFAULT 1,             -- 1~4
+  damage_level_label    TEXT,
+  damage_description    TEXT,
+  growth_stage          TEXT,
+  location_county       TEXT,
+  location_township     TEXT,
+  dialect_terms_detected JSONB DEFAULT '[]',
+  photo_analysis        TEXT,
+  cross_validation      TEXT,
+  confidence_score      FLOAT DEFAULT 0,
+  missing_fields        JSONB DEFAULT '[]',
+  analysis_notes        TEXT,
+
+  -- 申報結果
+  report_number         TEXT UNIQUE,
+  gov_submission_response JSONB,
+  mood_color            TEXT DEFAULT '#27AE60',
+
+  -- 狀態機
+  status                TEXT DEFAULT 'processing', -- processing|pending_confirm|published|failed
+  approval_status       TEXT DEFAULT 'pending',    -- pending|need_more_info|ready_to_submit|submitted
+  error_message         TEXT,
+
+  -- 相容有聲書欄位（保留供 n8n 引用）
+  novel_name            TEXT,
+  chapter_name          TEXT,
+  chapter_num           TEXT,
+  story_segments        JSONB DEFAULT '[]',
+  audio_url             JSONB DEFAULT '[]',
+  gender_map            JSONB DEFAULT '[]',
+  distance_map          JSONB DEFAULT '[]',
+  speed_map             JSONB DEFAULT '[]',
+  volume_map            JSONB DEFAULT '[]',
+  position_map          JSONB DEFAULT '[]',
+  sfx_map               JSONB DEFAULT '[]',
+  bgm_map               JSONB DEFAULT '[]',
+  bgm_url               TEXT
+);
+
+-- 2. API 金鑰池（與原有聲書共用結構）
+CREATE TABLE IF NOT EXISTS api_pool (
+  id              BIGSERIAL PRIMARY KEY,
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  service_name    TEXT NOT NULL,   -- 'bedrock' | 'google_stt' | 'line'
+  api_key         TEXT NOT NULL UNIQUE,
+  status          TEXT DEFAULT 'active',  -- active|exhausted|inactive|error
+  usage_count     INT DEFAULT 0,
+  last_used_at    TIMESTAMPTZ,
+  error_message   TEXT
+);
+
+-- 3. 使用紀錄 Log
+CREATE TABLE IF NOT EXISTS story_api_logs (
+  id          BIGSERIAL PRIMARY KEY,
+  created_at  TIMESTAMPTZ DEFAULT NOW(),
+  story_id    TEXT,
+  api_id      BIGINT REFERENCES api_pool(id),
+  usage_type  TEXT   -- 'voice'|'bgm'|'stt'|'vision'|'bedrock'
+);
+
+-- 索引
+CREATE INDEX IF NOT EXISTS idx_reports_status        ON disaster_reports(status);
+CREATE INDEX IF NOT EXISTS idx_reports_line_user     ON disaster_reports(line_user_id);
+CREATE INDEX IF NOT EXISTS idx_reports_township      ON disaster_reports(location_county, location_township);
+CREATE INDEX IF NOT EXISTS idx_reports_created       ON disaster_reports(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_api_pool_service      ON api_pool(service_name, status);
+
+-- Row Level Security（開放 anon 讀寫，正式上線應改為 auth）
+ALTER TABLE disaster_reports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE api_pool         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE story_api_logs   ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "anon_all" ON disaster_reports FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "anon_all" ON api_pool         FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "anon_all" ON story_api_logs   FOR ALL TO anon USING (true) WITH CHECK (true);
+
+-- 預設金鑰種子資料
+INSERT INTO api_pool (service_name, api_key, status) VALUES
+  ('bedrock',    'REPLACE_AWS_ACCESS_KEY',    'active'),
+  ('google_stt', 'REPLACE_GOOGLE_STT_KEY',    'active'),
+  ('line',       'REPLACE_LINE_CHANNEL_TOKEN', 'active')
+ON CONFLICT DO NOTHING;
